@@ -1,0 +1,16 @@
+name: CI
+on:
+  push:
+  pull_request:
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          rustup component add clippy
+          rustup component add rustfmt
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+      - run: cargo fmt --all -- --check
+      - run: cargo test --all-features
