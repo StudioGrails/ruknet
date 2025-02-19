@@ -211,6 +211,16 @@ impl Peer {
         self.close_notify.notify_waiters();
     }
 
+    pub async fn close_conn(&self, addr: SocketAddr) {
+        Self::close_conn_internal(
+            &self.command_queue,
+            &self.command_notify,
+            addr,
+            Priority::Low,
+            0,
+        ).await;
+    }
+
     pub fn ban_addr(&self, addr: SocketAddr, time: u64) {
         Self::ban_addr_internal(&self.ban_list, addr, time);
     }
