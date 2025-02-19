@@ -218,7 +218,8 @@ impl Peer {
             addr,
             Priority::Low,
             0,
-        ).await;
+        )
+        .await;
     }
 
     pub fn ban_addr(&self, addr: SocketAddr, time: u64) {
