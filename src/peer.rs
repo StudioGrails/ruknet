@@ -229,6 +229,14 @@ impl Peer {
         self.ban_list.remove(&addr);
     }
 
+    pub async fn get_ping_res(&self) -> String {
+        self.ping_res.read().await.clone()
+    }
+
+    pub async fn set_ping_res(&self, ping_res: &str) {
+        *self.ping_res.write().await = ping_res.to_string();
+    }
+
     fn start_recv_task(
         &self,
         packet_queue: &Arc<ArrayQueue<(SocketAddr, Bytes)>>,
@@ -323,7 +331,7 @@ impl Peer {
                             &socket,
                             &req_conns,
                             &ban_list,
-                            &ping_res,
+                            &ping_res.read().await.clone(),
                             &command_queue,
                             &message_queue,
                             &command_notify,
@@ -345,7 +353,7 @@ impl Peer {
                             &socket,
                             &req_conns,
                             &ban_list,
-                            &ping_res,
+                            &ping_res.read().await.clone(),
                             &command_queue,
                             &message_queue,
                             &command_notify,
@@ -370,7 +378,7 @@ impl Peer {
         socket: &UdpSocket,
         req_conns: &DashMap<SocketAddr, ReqConn>,
         ban_list: &DashMap<SocketAddr, u64>,
-        ping_res: &RwLock<String>,
+        ping_res: &String,
         command_queue: &ArrayQueue<RukCommand>,
         message_queue: &ArrayQueue<RukMessage>,
         command_notify: &Notify,
@@ -527,7 +535,7 @@ impl Peer {
         socket: &UdpSocket,
         req_conns: &DashMap<SocketAddr, ReqConn>,
         ban_list: &DashMap<SocketAddr, u64>,
-        ping_res: &RwLock<String>,
+        ping_res: &String,
         command_queue: &ArrayQueue<RukCommand>,
         message_queue: &ArrayQueue<RukMessage>,
         command_notify: &Notify,
@@ -592,7 +600,7 @@ impl Peer {
         guid: &u64,
         socket: &UdpSocket,
         req_conns: &DashMap<SocketAddr, ReqConn>,
-        ping_res: &RwLock<String>,
+        ping_res: &String,
         message_queue: &ArrayQueue<RukMessage>,
         message_notify: &Notify,
         now: u64,
@@ -621,7 +629,7 @@ impl Peer {
                     reply_buf.put_u64(ping_time);
                     reply_buf.put_u64(*guid);
                     reply_buf.put_slice(&OFFLINE_MESSAGE_DATA_ID);
-                    reply_buf.put_string(ping_res.read().await.clone());
+                    reply_buf.put_string(ping_res);
 
                     socket.send_to(reply_buf, addr).await?;
 

@@ -190,7 +190,7 @@ pub trait RukBufMut: BufMut {
         self.put_uint_le(n as u64, 3);
     }
 
-    fn put_string(&mut self, s: String) {
+    fn put_string(&mut self, s: &String) {
         self.put_u16(s.len() as u16);
         self.put_slice(s.as_bytes());
     }
