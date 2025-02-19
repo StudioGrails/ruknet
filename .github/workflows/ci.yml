@@ -1,7 +1,15 @@
 name: CI
 on:
   push:
+    paths-ignore:
+      - '.github/**'
+      - '.gitignore'
+      - 'README.md'
   pull_request:
+    paths-ignore:
+      - '.github/**'
+      - '.gitignore'
+      - 'README.md'
 
 jobs:
   ci:
