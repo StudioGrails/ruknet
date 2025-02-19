@@ -24,7 +24,7 @@ To use RukNet in your project, add the following to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-ruknet = "0.1.0"
+ruknet = "0.1.1"
 ```
 
 ## Usage
