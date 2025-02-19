@@ -1,15 +1,15 @@
 name: CI
 on:
   push:
-    paths-ignore:
-      - '.github/**'
-      - '.gitignore'
-      - 'README.md'
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'Cargo.toml'
   pull_request:
-    paths-ignore:
-      - '.github/**'
-      - '.gitignore'
-      - 'README.md'
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'Cargo.toml'
 
 jobs:
   ci:
