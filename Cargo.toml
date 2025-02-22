@@ -1,6 +1,6 @@
 [package]
 name = "ruknet"
-version = "0.1.1"
+version = "0.1.2"
 authors = ["Mirucow"]
 description = "The perfect reimplementation of the RakNet protocol in Rust"
 homepage = "https://github.com/StudioGrails/ruknet"
