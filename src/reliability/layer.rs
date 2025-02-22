@@ -57,7 +57,6 @@ impl Ord for OutgoingFragment {
 #[derive(Debug)]
 pub struct Layer<T: CongestionController> {
     max_size_of_packet: usize,
-    reply_buf: BytesMut,
     bandwidth_exceeded: bool,
     needs_arrival_rate: bool,
     is_dead: bool,
@@ -91,7 +90,6 @@ impl<T: CongestionController> Layer<T> {
                 - IP_UDP_HEADER_SIZE
                 - Datagram::HEADER_SIZE
                 - Datagram::PACKET_HEADER_SIZE,
-            reply_buf: BytesMut::with_capacity(mtu_size - IP_UDP_HEADER_SIZE),
             bandwidth_exceeded: false,
             needs_arrival_rate: false,
             is_dead: false,
@@ -134,6 +132,7 @@ impl<T: CongestionController> Layer<T> {
     pub async fn update(
         &mut self,
         now: u64,
+        reply_buf: &mut BytesMut,
         socket: &UdpSocket,
         addr: &SocketAddr,
     ) -> Result<(), LayerError> {
@@ -159,7 +158,8 @@ impl<T: CongestionController> Layer<T> {
                 seqs: self.acks.drain(..).collect(),
             };
 
-            self.send_datagram(socket, addr, &mut datagram).await?;
+            self.send_datagram(reply_buf, socket, addr, &mut datagram)
+                .await?;
         }
 
         if !self.naks.is_empty() {
@@ -167,7 +167,8 @@ impl<T: CongestionController> Layer<T> {
                 seqs: self.naks.drain(..).collect(),
             };
 
-            self.send_datagram(socket, addr, &mut datagram).await?;
+            self.send_datagram(reply_buf, socket, addr, &mut datagram)
+                .await?;
         }
 
         let needs_arrival_rate = self.congestion_controller.is_in_slow_start();
@@ -268,7 +269,8 @@ impl<T: CongestionController> Layer<T> {
 
                 self.congestion_controller.on_send_packet(packet_sizes[i]);
 
-                self.send_datagram(socket, addr, &mut packet).await?;
+                self.send_datagram(reply_buf, socket, addr, &mut packet)
+                    .await?;
 
                 if let Datagram::Packet { seq, fragments, .. } = packet {
                     self.retransmit_cache.insert(
@@ -491,13 +493,14 @@ impl<T: CongestionController> Layer<T> {
 
     async fn send_datagram(
         &mut self,
+        reply_buf: &mut BytesMut,
         socket: &UdpSocket,
         addr: &SocketAddr,
         datagram: &mut Datagram,
     ) -> Result<(), LayerError> {
-        self.reply_buf.clear();
-        self.reply_buf.put_datagram(datagram);
-        socket.send_to(&self.reply_buf, addr).await?;
+        reply_buf.clear();
+        reply_buf.put_datagram(datagram);
+        socket.send_to(reply_buf, addr).await?;
         Ok(())
     }
 

@@ -291,7 +291,8 @@ impl Peer {
         let packet_notify = packet_notify.clone();
         let mut conn_count = 0;
         let mut conns = HashMap::new();
-        let mut reply_buf = BytesMut::with_capacity(50);
+        let mut offline_reply_buf = BytesMut::with_capacity(50);
+        let mut online_reply_buf = BytesMut::with_capacity(MAX_MTU_SIZE - IP_UDP_HEADER_SIZE);
         let guid = self.guid;
         let instant = self.instant.clone();
         let socket = self.socket.clone();
@@ -326,7 +327,8 @@ impl Peer {
                             max_conn_count,
                             &mut conn_count,
                             &mut conns,
-                            &mut reply_buf,
+                            &mut offline_reply_buf,
+                            &mut online_reply_buf,
                             &guid,
                             &instant,
                             &socket,
@@ -348,7 +350,8 @@ impl Peer {
                             max_conn_count,
                             &mut conn_count,
                             &mut conns,
-                            &mut reply_buf,
+                            &mut offline_reply_buf,
+                            &mut online_reply_buf,
                             &guid,
                             &instant,
                             &socket,
@@ -373,7 +376,8 @@ impl Peer {
         max_conn_count: usize,
         conn_count: &mut usize,
         conns: &mut HashMap<SocketAddr, Conn>,
-        reply_buf: &mut BytesMut,
+        offline_reply_buf: &mut BytesMut,
+        online_reply_buf: &mut BytesMut,
         guid: &u64,
         instant: &tokio::time::Instant,
         socket: &UdpSocket,
@@ -395,7 +399,7 @@ impl Peer {
                 max_conn_count,
                 conn_count,
                 conns,
-                reply_buf,
+                offline_reply_buf,
                 guid,
                 socket,
                 req_conns,
@@ -473,7 +477,7 @@ impl Peer {
                 Self::send_ping_to_conn(now, conn, Reliability::Reliable);
             }
 
-            if let Err(e) = conn.layer.update(now, socket, addr).await {
+            if let Err(e) = conn.layer.update(now, online_reply_buf, socket, addr).await {
                 ruknet_debug!("Failed to update connection: {:?}", e);
                 Self::close_conn_internal(command_queue, command_notify, *addr, Priority::Low, 0)
                     .await;
@@ -531,7 +535,7 @@ impl Peer {
         max_conn_count: usize,
         conn_count: &mut usize,
         conns: &mut HashMap<SocketAddr, Conn>,
-        reply_buf: &mut BytesMut,
+        offline_reply_buf: &mut BytesMut,
         guid: &u64,
         socket: &UdpSocket,
         req_conns: &DashMap<SocketAddr, ReqConn>,
@@ -573,7 +577,7 @@ impl Peer {
                 max_conn_count,
                 conn_count,
                 conns,
-                reply_buf,
+                offline_reply_buf,
                 guid,
                 socket,
                 req_conns,
@@ -597,7 +601,7 @@ impl Peer {
         max_conn_count: usize,
         conn_count: &mut usize,
         conns: &mut HashMap<SocketAddr, Conn>,
-        reply_buf: &mut BytesMut,
+        offline_reply_buf: &mut BytesMut,
         guid: &u64,
         socket: &UdpSocket,
         req_conns: &DashMap<SocketAddr, ReqConn>,
@@ -625,14 +629,14 @@ impl Peer {
                     data.try_advance(OFFLINE_MESSAGE_DATA_ID.len())?;
                     let remote_guid = data.try_get_u64()?;
 
-                    reply_buf.clear();
-                    reply_buf.put_u8(OfflineMessageIDs::UnconnectedPong.to_u8());
-                    reply_buf.put_u64(ping_time);
-                    reply_buf.put_u64(*guid);
-                    reply_buf.put_slice(&OFFLINE_MESSAGE_DATA_ID);
-                    reply_buf.put_string(ping_res);
+                    offline_reply_buf.clear();
+                    offline_reply_buf.put_u8(OfflineMessageIDs::UnconnectedPong.to_u8());
+                    offline_reply_buf.put_u64(ping_time);
+                    offline_reply_buf.put_u64(*guid);
+                    offline_reply_buf.put_slice(&OFFLINE_MESSAGE_DATA_ID);
+                    offline_reply_buf.put_string(ping_res);
 
-                    socket.send_to(reply_buf, addr).await?;
+                    socket.send_to(offline_reply_buf, addr).await?;
 
                     Self::send_message(
                         message_queue,
@@ -666,28 +670,29 @@ impl Peer {
                     let proto_version = data.try_get_u8()?;
 
                     if proto_version != PROTOCOL_VERSION {
-                        reply_buf.clear();
-                        reply_buf.put_u8(OfflineMessageIDs::IncompatibleProtocolVersion.to_u8());
-                        reply_buf.put_u8(PROTOCOL_VERSION);
-                        reply_buf.put_slice(&OFFLINE_MESSAGE_DATA_ID);
-                        reply_buf.put_u64(*guid);
+                        offline_reply_buf.clear();
+                        offline_reply_buf
+                            .put_u8(OfflineMessageIDs::IncompatibleProtocolVersion.to_u8());
+                        offline_reply_buf.put_u8(PROTOCOL_VERSION);
+                        offline_reply_buf.put_slice(&OFFLINE_MESSAGE_DATA_ID);
+                        offline_reply_buf.put_u64(*guid);
 
-                        socket.send_to(reply_buf, addr).await?;
+                        socket.send_to(offline_reply_buf, addr).await?;
 
                         return Ok(());
                     }
 
-                    reply_buf.clear();
-                    reply_buf.put_u8(OfflineMessageIDs::OpenConnectionReply1.to_u8());
-                    reply_buf.put_slice(&OFFLINE_MESSAGE_DATA_ID);
-                    reply_buf.put_u64(*guid);
+                    offline_reply_buf.clear();
+                    offline_reply_buf.put_u8(OfflineMessageIDs::OpenConnectionReply1.to_u8());
+                    offline_reply_buf.put_slice(&OFFLINE_MESSAGE_DATA_ID);
+                    offline_reply_buf.put_u64(*guid);
 
-                    reply_buf.put_u8(0);
+                    offline_reply_buf.put_u8(0);
 
-                    reply_buf
+                    offline_reply_buf
                         .put_u16((data.len() + 18 + IP_UDP_HEADER_SIZE).min(MAX_MTU_SIZE) as u16);
 
-                    socket.send_to(reply_buf, addr).await?;
+                    socket.send_to(offline_reply_buf, addr).await?;
                 }
                 OfflineMessageIDs::OpenConnectionReply1 => {
                     data.try_advance(OFFLINE_MESSAGE_DATA_ID.len())?;
@@ -699,25 +704,25 @@ impl Peer {
                         None
                     };
 
-                    reply_buf.clear();
-                    reply_buf.put_u8(OfflineMessageIDs::OpenConnectionRequest2.to_u8());
-                    reply_buf.put_slice(&OFFLINE_MESSAGE_DATA_ID);
+                    offline_reply_buf.clear();
+                    offline_reply_buf.put_u8(OfflineMessageIDs::OpenConnectionRequest2.to_u8());
+                    offline_reply_buf.put_slice(&OFFLINE_MESSAGE_DATA_ID);
                     if let Some(cookie) = cookie {
-                        reply_buf.put_u32(cookie);
+                        offline_reply_buf.put_u32(cookie);
                     }
 
                     if let Some(req_conn) = req_conns.get(&addr) {
                         if cookie.is_some() {
-                            reply_buf.put_u8(0);
+                            offline_reply_buf.put_u8(0);
                         }
 
                         let mtu_size = data.try_get_u16()?;
 
-                        reply_buf.put_addr(req_conn.addr);
-                        reply_buf.put_u16(mtu_size);
-                        reply_buf.put_u64(*guid);
+                        offline_reply_buf.put_addr(req_conn.addr);
+                        offline_reply_buf.put_u16(mtu_size);
+                        offline_reply_buf.put_u64(*guid);
 
-                        socket.send_to(reply_buf, addr).await?;
+                        socket.send_to(offline_reply_buf, addr).await?;
                     }
                 }
                 OfflineMessageIDs::OpenConnectionRequest2 => {
@@ -730,12 +735,13 @@ impl Peer {
                     let remote_guid = data.try_get_u64()?;
 
                     if *conn_count >= max_conn_count {
-                        reply_buf.clear();
-                        reply_buf.put_u8(OfflineMessageIDs::NoFreeIncomingConnections.to_u8());
-                        reply_buf.put_slice(&OFFLINE_MESSAGE_DATA_ID);
-                        reply_buf.put_u64(*guid);
+                        offline_reply_buf.clear();
+                        offline_reply_buf
+                            .put_u8(OfflineMessageIDs::NoFreeIncomingConnections.to_u8());
+                        offline_reply_buf.put_slice(&OFFLINE_MESSAGE_DATA_ID);
+                        offline_reply_buf.put_u64(*guid);
 
-                        socket.send_to(reply_buf, addr).await?;
+                        socket.send_to(offline_reply_buf, addr).await?;
                         return Ok(());
                     }
 
@@ -751,22 +757,22 @@ impl Peer {
                         *conn_count += 1;
                         conns.insert(addr, conn);
 
-                        reply_buf.clear();
-                        reply_buf.put_u8(OfflineMessageIDs::OpenConnectionReply2.to_u8());
-                        reply_buf.put_slice(&OFFLINE_MESSAGE_DATA_ID);
-                        reply_buf.put_u64(*guid);
-                        reply_buf.put_addr(addr);
-                        reply_buf.put_u16(mtu_size);
-                        reply_buf.put_u8(remote_needs_security as u8);
+                        offline_reply_buf.clear();
+                        offline_reply_buf.put_u8(OfflineMessageIDs::OpenConnectionReply2.to_u8());
+                        offline_reply_buf.put_slice(&OFFLINE_MESSAGE_DATA_ID);
+                        offline_reply_buf.put_u64(*guid);
+                        offline_reply_buf.put_addr(addr);
+                        offline_reply_buf.put_u16(mtu_size);
+                        offline_reply_buf.put_u8(remote_needs_security as u8);
 
-                        socket.send_to(reply_buf, addr).await?;
+                        socket.send_to(offline_reply_buf, addr).await?;
                     } else {
-                        reply_buf.clear();
-                        reply_buf.put_u8(OfflineMessageIDs::IpRecentlyConnected.to_u8());
-                        reply_buf.put_slice(&OFFLINE_MESSAGE_DATA_ID);
-                        reply_buf.put_u64(*guid);
+                        offline_reply_buf.clear();
+                        offline_reply_buf.put_u8(OfflineMessageIDs::IpRecentlyConnected.to_u8());
+                        offline_reply_buf.put_slice(&OFFLINE_MESSAGE_DATA_ID);
+                        offline_reply_buf.put_u64(*guid);
 
-                        socket.send_to(reply_buf, addr).await?;
+                        socket.send_to(offline_reply_buf, addr).await?;
                     }
                 }
                 OfflineMessageIDs::OpenConnectionReply2 => {
@@ -792,11 +798,11 @@ impl Peer {
                                 conn.layer.set_timeout(timeout);
                             }
 
-                            reply_buf.clear();
-                            reply_buf.put_u8(OnlineMessageIDs::ConnectionRequest.to_u8());
-                            reply_buf.put_u64(*guid);
-                            reply_buf.put_u64(now);
-                            reply_buf.put_u8(0);
+                            offline_reply_buf.clear();
+                            offline_reply_buf.put_u8(OnlineMessageIDs::ConnectionRequest.to_u8());
+                            offline_reply_buf.put_u64(*guid);
+                            offline_reply_buf.put_u64(now);
+                            offline_reply_buf.put_u8(0);
 
                             Self::send_to_conn(
                                 now,
@@ -804,7 +810,7 @@ impl Peer {
                                 Priority::Immediate,
                                 Reliability::Reliable,
                                 0,
-                                Bytes::copy_from_slice(reply_buf),
+                                Bytes::copy_from_slice(offline_reply_buf),
                             );
 
                             *conn_count += 1;
