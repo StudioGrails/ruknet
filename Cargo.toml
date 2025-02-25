@@ -2,7 +2,7 @@
 name = "ruknet"
 version = "0.1.2"
 authors = ["Mirucow"]
-description = "The perfect reimplementation of the RakNet protocol in Rust"
+description = "Highly accurate reimplementation of the RakNet protocol in Rust"
 homepage = "https://github.com/StudioGrails/ruknet"
 repository = "https://github.com/StudioGrails/ruknet"
 documentation = "https://docs.rs/ruknet"
