@@ -1,15 +1,13 @@
 # RukNet
 
-RukNet is the first perfect reimplementation of the RakNet protocol in Rust. It provides a robust and efficient networking library for Rust developers requiring RakNet compatibility.
+RukNet is the highly accurate reimplementation of the RakNet protocol in Rust. It provides a robust and efficient networking library for Rust developers requiring RakNet compatibility.
 
 ## Overview
 
-RukNet implements most features of the RakNet protocol while intentionally omitting certain features such as:
+RukNet implements most features of the RakNet protocol except for the following:
 
 - `security`: Encryption and decryption of packets. This feature is planned for future implementation but is not a current priority.
 - `receipt`: Ack of messages for application layer. This feature is not implemented as it is deemed unnecessary.
-
-Other notable improvements include enhanced performance using optimized algorithms and a single-threaded design.
 
 ## Feature
 
