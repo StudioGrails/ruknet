@@ -7,6 +7,7 @@ use std::{
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use crossbeam_queue::ArrayQueue;
 use dashmap::DashMap;
+use std::time::Instant;
 use tokio::{
     net::UdpSocket,
     sync::{Notify, RwLock},
@@ -58,9 +59,9 @@ pub struct Peer {
 }
 
 impl Peer {
-    const PACKET_QUEUE_SIZE: usize = 1024;
-    const COMMAND_QUEUE_SIZE: usize = 1024;
-    const MESSAGE_QUEUE_SIZE: usize = 1024;
+    const PACKET_QUEUE_SIZE: usize = 8192;
+    const COMMAND_QUEUE_SIZE: usize = 8192;
+    const MESSAGE_QUEUE_SIZE: usize = 8192;
 
     pub async fn new<A: ToSocketAddrs>(addr: A, ping_res: &str) -> Result<Self, PeerError> {
         let addr = addr
@@ -270,6 +271,8 @@ impl Peer {
                                     packet_notify.notified().await;
                                     packet = returned;
                                 }
+                                // Notify update task immediately when packet arrives
+                                packet_notify.notify_one();
                             }
                             Err(e) => {
                                 ruknet_debug!("Failed to receive data: {:?}", e);
@@ -306,10 +309,18 @@ impl Peer {
         let close_notify = self.close_notify.clone();
 
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(10));
+            // Use 10μs interval for maximum throughput
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(30));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            
+            // Cache ping_res to avoid repeated reads
+            let mut cached_ping_res = ping_res.read().await.clone();
+            let mut last_ping_res_update = Instant::now();
 
             loop {
                 tokio::select! {
+                    biased;  // Check in order for better responsiveness
+                    
                     _ = close_notify.notified() => {
                         for (addr, _) in conns.iter() {
                             Self::close_conn_internal(
@@ -334,7 +345,7 @@ impl Peer {
                             &socket,
                             &req_conns,
                             &ban_list,
-                            &ping_res.read().await.clone(),
+                            &cached_ping_res,
                             &command_queue,
                             &message_queue,
                             &command_notify,
@@ -343,7 +354,8 @@ impl Peer {
 
                         break;
                     }
-                    _ = interval.tick() => {
+                    _ = command_notify.notified() => {
+                        // Process immediately when new command arrives (high priority for throughput)
                         Self::update_cycle(
                             &packet_queue,
                             &packet_notify,
@@ -357,7 +369,56 @@ impl Peer {
                             &socket,
                             &req_conns,
                             &ban_list,
-                            &ping_res.read().await.clone(),
+                            &cached_ping_res,
+                            &command_queue,
+                            &message_queue,
+                            &command_notify,
+                            &message_notify
+                        ).await;
+                    }
+                    _ = packet_notify.notified() => {
+                        // Process immediately when packet arrives
+                        Self::update_cycle(
+                            &packet_queue,
+                            &packet_notify,
+                            max_conn_count,
+                            &mut conn_count,
+                            &mut conns,
+                            &mut offline_reply_buf,
+                            &mut online_reply_buf,
+                            &guid,
+                            &instant,
+                            &socket,
+                            &req_conns,
+                            &ban_list,
+                            &cached_ping_res,
+                            &command_queue,
+                            &message_queue,
+                            &command_notify,
+                            &message_notify
+                        ).await;
+                    }
+                    _ = interval.tick() => {
+                        // Update cached ping_res periodically (every 100ms)
+                        if last_ping_res_update.elapsed().as_millis() >= 100 {
+                            cached_ping_res = ping_res.read().await.clone();
+                            last_ping_res_update = Instant::now();
+                        }
+                        
+                        Self::update_cycle(
+                            &packet_queue,
+                            &packet_notify,
+                            max_conn_count,
+                            &mut conn_count,
+                            &mut conns,
+                            &mut offline_reply_buf,
+                            &mut online_reply_buf,
+                            &guid,
+                            &instant,
+                            &socket,
+                            &req_conns,
+                            &ban_list,
+                            &cached_ping_res,
                             &command_queue,
                             &message_queue,
                             &command_notify,
@@ -500,6 +561,7 @@ impl Peer {
                 Self::send_ping_to_conn(now, conn, Reliability::Unreliable);
             }
 
+            // Process any remaining messages (in case some were queued)
             let msgs = conn.layer.recv();
 
             for msg in msgs {
@@ -554,6 +616,30 @@ impl Peer {
                 ruknet_debug!("Failed to handle datagram: {:?}", e);
                 Self::close_conn_internal(command_queue, command_notify, addr, Priority::Low, 0)
                     .await;
+                return;
+            }
+            
+            // Process messages immediately after handling datagram
+            let msgs = conn.layer.recv();
+            for msg in msgs {
+                if let Err(e) = Self::process_message(
+                    now,
+                    command_queue,
+                    message_queue,
+                    command_notify,
+                    message_notify,
+                    conn,
+                    &addr,
+                    msg,
+                )
+                .await
+                {
+                    ruknet_debug!("Failed to process message: {:?}", e);
+                    Self::ban_addr_internal(ban_list, addr, conn.layer.get_timeout());
+                    Self::close_conn_internal(command_queue, command_notify, addr, Priority::Low, 0)
+                        .await;
+                    return;
+                }
             }
         } else {
             if let Some(ban_time) = ban_list.get(&addr) {
@@ -1098,7 +1184,7 @@ impl Peer {
                 message_notify,
                 *addr,
                 conn.guid,
-                RukMessageContext::App { data: msg.to_vec() },
+                RukMessageContext::App { data: Vec::from(msg) },
             )
             .await;
         }
@@ -1157,11 +1243,24 @@ impl Peer {
             ordering_channel,
             data,
         };
+        let mut retry_count = 0;
         while let Err(returned) = command_queue.push(command) {
-            ruknet_debug!("Command queue is full, waiting for space...");
-            command_notify.notified().await;
+            ruknet_debug!("Command queue is full, yielding and retrying...");
+            // Yield to allow update_task to process commands and free up space
+            tokio::task::yield_now().await;
             command = returned;
+            retry_count += 1;
+            // If we've retried many times, wait briefly on the notify
+            if retry_count > 100 {
+                tokio::select! {
+                    _ = command_notify.notified() => {}
+                    _ = tokio::time::sleep(tokio::time::Duration::from_micros(100)) => {}
+                }
+                retry_count = 0;
+            }
         }
+        // Notify update_task that there's a new command to process
+        command_notify.notify_one();
     }
 
     async fn send_command_close(
@@ -1170,10 +1269,19 @@ impl Peer {
         addr: SocketAddr,
     ) {
         let mut command = RukCommand::Close { addr };
+        let mut retry_count = 0;
         while let Err(returned) = command_queue.push(command) {
-            ruknet_debug!("Command queue is full, waiting for space...");
-            command_notify.notified().await;
+            ruknet_debug!("Command queue is full, yielding and retrying...");
+            tokio::task::yield_now().await;
             command = returned;
+            retry_count += 1;
+            if retry_count > 100 {
+                tokio::select! {
+                    _ = command_notify.notified() => {}
+                    _ = tokio::time::sleep(tokio::time::Duration::from_micros(100)) => {}
+                }
+                retry_count = 0;
+            }
         }
     }
 
@@ -1189,11 +1297,22 @@ impl Peer {
             guid,
             context,
         };
+        let mut retry_count = 0;
         while let Err(returned) = message_queue.push(message) {
-            ruknet_debug!("Message queue is full, waiting for space...");
-            message_notify.notified().await;
+            ruknet_debug!("Message queue is full, yielding and retrying...");
+            tokio::task::yield_now().await;
             message = returned;
+            retry_count += 1;
+            if retry_count > 100 {
+                tokio::select! {
+                    _ = message_notify.notified() => {}
+                    _ = tokio::time::sleep(tokio::time::Duration::from_micros(100)) => {}
+                }
+                retry_count = 0;
+            }
         }
+        // Notify receivers that a new message is available
+        message_notify.notify_one();
     }
 
     fn send_to_conn(
