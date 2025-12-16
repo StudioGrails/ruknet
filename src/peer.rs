@@ -7,7 +7,6 @@ use std::{
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use crossbeam_queue::ArrayQueue;
 use dashmap::DashMap;
-use std::time::Instant;
 use tokio::{
     net::UdpSocket,
     sync::{Notify, RwLock},
@@ -312,15 +311,11 @@ impl Peer {
             // Use 10μs interval for maximum throughput
             let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(30));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            
-            // Cache ping_res to avoid repeated reads
-            let mut cached_ping_res = ping_res.read().await.clone();
-            let mut last_ping_res_update = Instant::now();
 
             loop {
                 tokio::select! {
                     biased;  // Check in order for better responsiveness
-                    
+
                     _ = close_notify.notified() => {
                         for (addr, _) in conns.iter() {
                             Self::close_conn_internal(
@@ -345,7 +340,7 @@ impl Peer {
                             &socket,
                             &req_conns,
                             &ban_list,
-                            &cached_ping_res,
+                            &ping_res.read().await.clone(),
                             &command_queue,
                             &message_queue,
                             &command_notify,
@@ -369,7 +364,7 @@ impl Peer {
                             &socket,
                             &req_conns,
                             &ban_list,
-                            &cached_ping_res,
+                            &ping_res.read().await.clone(),
                             &command_queue,
                             &message_queue,
                             &command_notify,
@@ -391,7 +386,7 @@ impl Peer {
                             &socket,
                             &req_conns,
                             &ban_list,
-                            &cached_ping_res,
+                            &ping_res.read().await.clone(),
                             &command_queue,
                             &message_queue,
                             &command_notify,
@@ -399,12 +394,6 @@ impl Peer {
                         ).await;
                     }
                     _ = interval.tick() => {
-                        // Update cached ping_res periodically (every 100ms)
-                        if last_ping_res_update.elapsed().as_millis() >= 100 {
-                            cached_ping_res = ping_res.read().await.clone();
-                            last_ping_res_update = Instant::now();
-                        }
-                        
                         Self::update_cycle(
                             &packet_queue,
                             &packet_notify,
@@ -418,7 +407,7 @@ impl Peer {
                             &socket,
                             &req_conns,
                             &ban_list,
-                            &cached_ping_res,
+                            &ping_res.read().await.clone(),
                             &command_queue,
                             &message_queue,
                             &command_notify,
@@ -618,7 +607,7 @@ impl Peer {
                     .await;
                 return;
             }
-            
+
             // Process messages immediately after handling datagram
             let msgs = conn.layer.recv();
             for msg in msgs {
@@ -636,8 +625,14 @@ impl Peer {
                 {
                     ruknet_debug!("Failed to process message: {:?}", e);
                     Self::ban_addr_internal(ban_list, addr, conn.layer.get_timeout());
-                    Self::close_conn_internal(command_queue, command_notify, addr, Priority::Low, 0)
-                        .await;
+                    Self::close_conn_internal(
+                        command_queue,
+                        command_notify,
+                        addr,
+                        Priority::Low,
+                        0,
+                    )
+                    .await;
                     return;
                 }
             }
@@ -1184,7 +1179,9 @@ impl Peer {
                 message_notify,
                 *addr,
                 conn.guid,
-                RukMessageContext::App { data: Vec::from(msg) },
+                RukMessageContext::App {
+                    data: Vec::from(msg),
+                },
             )
             .await;
         }
