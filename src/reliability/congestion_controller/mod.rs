@@ -1,4 +1,6 @@
+#[cfg(not(feature = "udt"))]
 pub mod sliding_window;
+#[cfg(feature = "udt")]
 pub mod udt;
 
 pub trait CongestionController {

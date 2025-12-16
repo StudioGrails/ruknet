@@ -44,7 +44,7 @@ impl Eq for OutgoingFragment {}
 
 impl PartialOrd for OutgoingFragment {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.weight.cmp(&other.weight))
+        Some(self.cmp(other))
     }
 }
 
